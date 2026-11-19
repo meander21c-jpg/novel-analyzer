@@ -133,7 +133,8 @@ dialog h2{font-family:"Noto Serif KR";margin:0 0 4px}
       <div class="chips" id="examples"></div>
     </div>
     <div class="card">
-      <h2>🗂️ 분석 기록</h2>
+      <h2 style="display:flex;align-items:center;gap:8px">🗂️ 분석 기록<button class="icon-btn" id="syncBtn" title="지금 동기화" style="margin-left:auto;padding:3px 9px;font-size:12px">🔄</button></h2>
+      <div class="note" id="syncInfo" style="margin:-6px 0 10px"></div>
       <ul class="history" id="history"></ul>
     </div>
   </aside>
@@ -172,6 +173,13 @@ dialog h2{font-family:"Noto Serif KR";margin:0 0 4px}
     <option value="deepseek-chat">deepseek-chat (빠름, 추천)</option>
     <option value="deepseek-reasoner">deepseek-reasoner (깊은 추론, 느림)</option>
   </select>
+  <h2 style="margin-top:22px;font-size:17px">☁️ 클라우드 동기화</h2>
+  <div class="note" id="syncState"></div>
+  <label for="syncUrl">구글 Apps Script 웹앱 주소</label>
+  <input id="syncUrl" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off">
+  <label for="syncPw">동기화 암호</label>
+  <input id="syncPw" type="password" placeholder="Apps Script에 적은 암호" autocomplete="off">
+  <div class="note">주소와 암호를 넣으면 분석 기록이 내 구글 시트에 저장되어 <b>어느 컴퓨터에서나</b> 같은 기록을 볼 수 있어요. 비워 두면 이 브라우저에만 저장됩니다.</div>
   <div class="row">
     <button class="ghost" id="forgetKey">키 지우기</button>
     <button class="ghost" id="cancelSet">취소</button>
@@ -357,12 +365,9 @@ async function analyze(){
     else if (!finishReason) doneMsg += " (연결이 중간에 끊겼을 수 있어요)";
     setStatus(false, doneMsg); paint(false);
     if (markdown.trim()){
-      const hist = LS.get("history", []);
       const now = new Date();
       const time = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}-${String(now.getDate()).padStart(2,"0")} ${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")}`;
-      hist.unshift({id: Date.now(), title: currentTitle, time, md: markdown});
-      while (hist.length && !LS.set("history", hist.slice(0, 30))) hist.pop();
-      loadHistory(); toast("분석 완료! 이 브라우저 기록에 저장했어요");
+      addHistory({id: Date.now(), title: currentTitle, time, md: markdown});
     }
   }catch(e){
     if (e.name === "AbortError" && timedOut){
@@ -396,11 +401,87 @@ goBtn.onclick = analyze;
   $("examples").appendChild(b);
 });
 
+/* ---------- 클라우드 동기화 (구글 시트 + Apps Script) ---------- */
+const Cloud = {
+  url(){ return (LS.get("sync_url", "") || "").trim(); },
+  pw(){ return LS.get("sync_pw", "") || ""; },
+  on(){ return /^https:\/\/script\.google\.com\/.+\/exec$/.test(this.url()) && !!this.pw(); },
+  async call(action, data){
+    const res = await fetch(this.url(), {
+      method: "POST",
+      headers: {"Content-Type": "text/plain;charset=utf-8"},   // 구글 웹앱이 받아 주는 단순 요청 형식
+      body: JSON.stringify(Object.assign({action, pw: this.pw()}, data || {}))
+    });
+    let j;
+    try{ j = await res.json(); }catch(e){ throw new Error("웹앱 응답을 읽지 못했어요. 배포 시 '액세스 권한: 모든 사용자'인지 확인하세요."); }
+    if (!j.ok) throw new Error(j.error || "알 수 없는 오류");
+    return j;
+  }
+};
+let HIST = LS.get("history", []);
+let syncing = false, lastSync = 0;
+function hhmm(){ const d = new Date(); return `${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`; }
+function setSync(state, msg){
+  const el = $("syncInfo");
+  if (state === "off")  el.innerHTML = "💾 이 브라우저에만 저장 중 · <a href='#' id='syncSetup'>클라우드 연결하기</a>";
+  if (state === "busy") el.textContent = "☁️ 동기화 중…";
+  if (state === "ok")   el.textContent = `☁️ 클라우드 동기화됨 · ${hhmm()}`;
+  if (state === "err")  el.innerHTML = `<span style="color:#c0392b">⚠️ 동기화 실패: ${esc(msg || "")}</span>`;
+  const s = $("syncSetup"); if (s) s.onclick = e => { e.preventDefault(); openSettings(); };
+}
+function saveLocal(){
+  let h = HIST.slice(0, 30);
+  while (h.length && !LS.set("history", h)) h.pop();
+}
+const plain = it => ({id: it.id, title: it.title, time: it.time, md: it.md});
+async function addHistory(item){
+  HIST.unshift(item); saveLocal(); loadHistory();
+  if (!Cloud.on()){ toast("분석 완료! 이 브라우저 기록에 저장했어요"); return; }
+  setSync("busy");
+  try{
+    await Cloud.call("save", {item: plain(item)});
+    item.synced = true; saveLocal(); setSync("ok");
+    toast("분석 완료! 클라우드에 저장했어요");
+  }catch(e){ setSync("err", e.message); toast("이 브라우저엔 저장됐지만 클라우드 저장은 실패했어요"); }
+}
+async function deleteHistory(id){
+  if (Cloud.on()){
+    try{ await Cloud.call("delete", {id: String(id)}); }
+    catch(e){ toast("클라우드에서 삭제하지 못했어요: " + e.message); return; }
+  }
+  HIST = HIST.filter(h => String(h.id) !== String(id)); saveLocal(); loadHistory();
+}
+/* 클라우드 기록을 가져오고, 아직 안 올라간 이 브라우저 기록은 올림 */
+async function syncNow(showToast){
+  if (!Cloud.on()){ setSync("off"); return false; }
+  if (syncing) return false;
+  syncing = true; setSync("busy");
+  try{
+    const {items} = await Cloud.call("list");
+    const cloudIds = new Set(items.map(i => String(i.id)));
+    for (const it of HIST.filter(h => !h.synced && !cloudIds.has(String(h.id)))){
+      await Cloud.call("save", {item: plain(it)});
+      items.push(plain(it));
+    }
+    HIST = items.map(i => Object.assign(plain(i), {id: Number(i.id), synced: true}))
+                .sort((a, b) => b.id - a.id);
+    saveLocal(); loadHistory(); setSync("ok"); lastSync = Date.now();
+    if (showToast) toast(`클라우드와 동기화했어요 (${HIST.length}건)`);
+    return true;
+  }catch(e){ setSync("err", e.message); if (showToast) toast("동기화 실패: " + e.message); return false; }
+  finally{ syncing = false; }
+}
+$("syncBtn").onclick = () => Cloud.on() ? syncNow(true) : openSettings();
+/* 다른 창에 갔다가 돌아오면 자동으로 최신 기록을 가져옴 (1분에 한 번까지) */
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && Cloud.on() && Date.now() - lastSync > 60000) syncNow(false);
+});
+
 /* ---------- 기록 ---------- */
 function loadHistory(){
-  const list = LS.get("history", []);
+  const list = HIST;
   const ul = $("history"); ul.innerHTML = "";
-  if (!list.length){ ul.innerHTML = '<div class="empty-h">아직 분석 기록이 없어요.<br>기록은 이 브라우저에만 저장돼요.</div>'; return; }
+  if (!list.length){ ul.innerHTML = `<div class="empty-h">아직 분석 기록이 없어요.<br>${Cloud.on() ? "기록은 클라우드(구글 시트)에 저장돼요." : "기록은 이 브라우저에만 저장돼요."}</div>`; return; }
   list.forEach(it=>{
     const li = document.createElement("li");
     li.innerHTML = `<span class="t">📕 ${esc(it.title)}</span><span class="d">${esc(it.time.slice(5))}</span><button class="x" title="삭제">✕</button>`;
@@ -408,7 +489,7 @@ function loadHistory(){
       if (e.target.classList.contains("x")){
         e.stopPropagation();
         if (!confirm("이 기록을 삭제할까요?")) return;
-        LS.set("history", LS.get("history", []).filter(h => h.id !== it.id)); loadHistory(); return;
+        deleteHistory(it.id); return;
       }
       currentTitle = it.title; markdown = it.md; thinking = "";
       currentFile = it.title.replace(/[\\/:*?"<>|]/g,"") + ".md";
@@ -436,6 +517,8 @@ function openSettings(){
     : validKey(key) ? `✅ 저장된 키: ${key.slice(0,5)}…${key.slice(-4)} (바꾸려면 새로 입력)`
     : "❗ 저장된 키가 올바르지 않습니다(가려진 키 ••• 가 복사된 것 같아요). 전체 키를 다시 넣어 주세요.";
   $("model").value = LS.get("ds_model", "deepseek-chat"); $("apiKey").value = "";
+  $("syncUrl").value = Cloud.url(); $("syncPw").value = Cloud.pw();
+  $("syncState").textContent = Cloud.on() ? "✅ 클라우드에 연결되어 있어요." : "아직 연결 안 됨 — 기록이 이 브라우저에만 저장돼요.";
   if (!$("setDlg").open) $("setDlg").showModal();
 }
 $("setBtn").onclick = openSettings;
@@ -448,9 +531,21 @@ $("saveSet").onclick = ()=>{
       : "❗ 키 형식이 올바르지 않아요. sk- 로 시작하는 전체 키를 공백 없이 붙여 넣어 주세요.";
     toast("키가 올바르지 않아 저장하지 않았어요"); return;
   }
+  const su = $("syncUrl").value.trim(), sp = $("syncPw").value;
+  if (su && !/^https:\/\/script\.google\.com\/.+\/exec$/.test(su)){
+    $("syncState").textContent = "❗ 웹앱 주소는 https://script.google.com/macros/s/ 로 시작하고 /exec 로 끝나야 해요.";
+    toast("웹앱 주소가 올바르지 않아요"); return;
+  }
+  if (su && !sp){ $("syncState").textContent = "❗ 동기화 암호도 넣어 주세요."; return; }
   if (k) LS.set("ds_key", k);
   LS.set("ds_model", $("model").value);
+  const changed = su !== Cloud.url() || sp !== Cloud.pw();
+  LS.set("sync_url", su); LS.set("sync_pw", sp);
   $("setDlg").close(); toast("설정을 저장했어요");
+  if (changed){
+    if (Cloud.on()) HIST.forEach(h => delete h.synced);   // 새 저장소엔 이 브라우저 기록을 모두 올림
+    loadHistory(); syncNow(true);
+  }
 };
 $("forgetKey").onclick = ()=>{
   try{ localStorage.removeItem("ds_key"); }catch(e){}
@@ -476,6 +571,7 @@ takeKeyFromHash();
 window.addEventListener("hashchange", takeKeyFromHash);
 
 loadHistory();
+if (Cloud.on()) syncNow(false); else setSync("off");
 if (!validKey(LS.get("ds_key", ""))) openSettings();
 </script>
 </body>

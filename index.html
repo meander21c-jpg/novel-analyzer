@@ -403,6 +403,18 @@ $("forgetKey").onclick = ()=>{
   $("setDlg").close(); toast("이 브라우저에서 키를 지웠어요");
 };
 
+/* 북마크 링크(#key=sk-...)로 열면 키를 이 브라우저에 저장하고 주소창에서 지움 */
+(function(){
+  try{
+    const p = new URLSearchParams(location.hash.slice(1));
+    const k = (p.get("key") || "").trim();
+    if (k){
+      LS.set("ds_key", k);
+      history.replaceState(null, "", location.pathname + location.search);
+    }
+  }catch(e){}
+})();
+
 loadHistory();
 if (!LS.get("ds_key", "")) openSettings();
 </script>

@@ -213,11 +213,13 @@ function buildToc(){
     toc.appendChild(a);
   });
 }
-let pending = false;
+let pending = false, paintStreaming = false;
 function paint(streaming){
+  paintStreaming = streaming;   // 마지막 호출 상태를 기억 (완료 후 커서가 남지 않도록)
   if (pending) return; pending = true;
   requestAnimationFrame(()=>{
     pending = false;
+    const streaming = paintStreaming;
     let html = "";
     if (thinking && !markdown) html += `<div class="thinking">🧠 생각 중…\n${esc(thinking.slice(-1500))}</div>`;
     html += `<h1>《${esc(currentTitle)}》</h1>`;
@@ -286,6 +288,16 @@ async function analyze(){
   goBtn.textContent = "⏹ 중지"; goBtn.classList.add("stop");
   paint(true);
   controller = new AbortController();
+  const myCtrl = controller;
+  /* 서버가 바빠 아무것도 안 보내면 무한정 기다리지 않도록: 90초 동안 새 글이 없으면 중단 */
+  const IDLE_MS = 90000;
+  let lastProgress = Date.now(), timedOut = false, finishReason = "", streamErr = "";
+  const t0 = Date.now();
+  const watchdog = setInterval(()=>{
+    const idle = Date.now() - lastProgress;
+    if (!markdown && !thinking) setStatus(true, `DeepSeek 응답을 기다리는 중… ${Math.round((Date.now()-t0)/1000)}초`);
+    if (idle > IDLE_MS){ timedOut = true; myCtrl.abort(); }
+  }, 1000);
   let userMsg = `작가: ${author || "(미상 — 제목으로 판단해 주세요)"}\n소설 제목: ${title}`;
   if (extra) userMsg += `\n추가 요청: ${extra}`;
   try{
@@ -315,13 +327,29 @@ async function analyze(){
         if (!line.startsWith("data:")) continue;
         const data = line.slice(5).trim();
         if (data === "[DONE]") break outer;
-        let delta;
-        try{ delta = JSON.parse(data).choices[0].delta || {}; }catch(e){ continue; }
-        if (delta.reasoning_content){ thinking += delta.reasoning_content; setStatus(true, "깊이 생각하는 중…"); paint(true); }
-        if (delta.content){ markdown += delta.content; setStatus(true, `작성 중… ${markdown.length.toLocaleString()}자`); paint(true); }
+        let j, delta;
+        try{ j = JSON.parse(data); }catch(e){ continue; }
+        if (j.error){ streamErr = j.error.message || JSON.stringify(j.error); break outer; }
+        const ch = (j.choices && j.choices[0]) || {};
+        if (ch.finish_reason) finishReason = ch.finish_reason;
+        delta = ch.delta || {};
+        if (delta.reasoning_content){ lastProgress = Date.now(); thinking += delta.reasoning_content; setStatus(true, "깊이 생각하는 중…"); paint(true); }
+        if (delta.content){ lastProgress = Date.now(); markdown += delta.content; setStatus(true, `작성 중… ${markdown.length.toLocaleString()}자`); paint(true); }
       }
     }
-    setStatus(false, `완료 · ${markdown.length.toLocaleString()}자`); paint(false);
+    if (!markdown.trim()){
+      const why = streamErr ? `DeepSeek 오류: ${streamErr}`
+        : finishReason === "insufficient_system_resource" ? "DeepSeek 서버가 지금 너무 바쁩니다."
+        : finishReason === "content_filter" ? "DeepSeek이 이 요청에 대한 답변을 거부했습니다."
+        : "DeepSeek이 아무 내용도 보내지 않고 연결을 끊었습니다. (서버 혼잡일 가능성이 큽니다)";
+      showRetry(why);
+      return;
+    }
+    let doneMsg = `완료 · ${markdown.length.toLocaleString()}자`;
+    if (finishReason === "length") doneMsg += " (최대 길이에 도달해 끝부분이 잘렸을 수 있어요)";
+    else if (finishReason && finishReason !== "stop") doneMsg += ` (중간에 끊김: ${finishReason})`;
+    else if (!finishReason) doneMsg += " (연결이 중간에 끊겼을 수 있어요)";
+    setStatus(false, doneMsg); paint(false);
     if (markdown.trim()){
       const hist = LS.get("history", []);
       const now = new Date();
@@ -331,12 +359,24 @@ async function analyze(){
       loadHistory(); toast("분석 완료! 이 브라우저 기록에 저장했어요");
     }
   }catch(e){
-    if (e.name === "AbortError"){ setStatus(false, "중지됨"); paint(false); }
+    if (e.name === "AbortError" && timedOut){
+      if (markdown.trim()){ setStatus(false, `응답이 90초간 멈춰서 중단했어요 · ${markdown.length.toLocaleString()}자까지 받음`); paint(false); }
+      else showRetry("DeepSeek이 90초 동안 아무 응답도 보내지 않았습니다. (서버 혼잡)");
+    }
+    else if (e.name === "AbortError"){ setStatus(false, "중지됨"); paint(false); }
+    else if (markdown.trim()){ setStatus(false, `연결이 끊겼어요 · ${markdown.length.toLocaleString()}자까지 받음`); paint(false); }
     else { out.innerHTML = `<div class="err">⚠️ DeepSeek에 연결할 수 없습니다. 인터넷 연결을 확인해 주세요.\n${esc(String(e))}</div>`; setStatus(false,""); }
   }finally{
+    clearInterval(watchdog);
     controller = null;
     goBtn.textContent = "📚 분석 시작"; goBtn.classList.remove("stop");
   }
+}
+function showRetry(why){
+  out.innerHTML = `<div class="err">⚠️ 분석 결과를 받지 못했습니다.\n${esc(why)}\n잠시 후 다시 시도해 주세요.</div>` +
+    `<button class="primary" id="retryBtn" style="max-width:240px">🔄 다시 시도</button>`;
+  $("retryBtn").onclick = analyze;
+  setStatus(false, "");
 }
 function setStatus(busy, text){ $("status").innerHTML = (busy?'<span class="dot"></span>':'') + esc(text); }
 goBtn.onclick = analyze;
@@ -404,16 +444,19 @@ $("forgetKey").onclick = ()=>{
 };
 
 /* 북마크 링크(#key=sk-...)로 열면 키를 이 브라우저에 저장하고 주소창에서 지움 */
-(function(){
+function takeKeyFromHash(){
   try{
     const p = new URLSearchParams(location.hash.slice(1));
     const k = (p.get("key") || "").trim();
     if (k){
       LS.set("ds_key", k);
       history.replaceState(null, "", location.pathname + location.search);
+      if ($("setDlg").open) $("setDlg").close();
     }
   }catch(e){}
-})();
+}
+takeKeyFromHash();
+window.addEventListener("hashchange", takeKeyFromHash);
 
 loadHistory();
 if (!LS.get("ds_key", "")) openSettings();

@@ -177,9 +177,9 @@ dialog h2{font-family:"Noto Serif KR";margin:0 0 4px}
   <div class="note" id="syncState"></div>
   <label for="syncUrl">구글 Apps Script 웹앱 주소</label>
   <input id="syncUrl" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off">
-  <label for="syncPw">동기화 암호</label>
-  <input id="syncPw" type="password" placeholder="Apps Script에 적은 암호" autocomplete="off">
-  <div class="note">주소와 암호를 넣으면 분석 기록이 내 구글 시트에 저장되어 <b>어느 컴퓨터에서나</b> 같은 기록을 볼 수 있어요. 비워 두면 이 브라우저에만 저장됩니다.</div>
+  <label for="syncPw">동기화 암호 (선택 — 보통은 비워 두세요)</label>
+  <input id="syncPw" type="password" placeholder="암호 없이 사용 중" autocomplete="off">
+  <div class="note">분석 기록은 구글 시트에 자동 저장되어 <b>어느 컴퓨터에서나</b> 같은 기록이 보여요. 주소 칸을 비워 두면 기본 저장소를 씁니다.</div>
   <div class="row">
     <button class="ghost" id="forgetKey">키 지우기</button>
     <button class="ghost" id="cancelSet">취소</button>
@@ -402,10 +402,12 @@ goBtn.onclick = analyze;
 });
 
 /* ---------- 클라우드 동기화 (구글 시트 + Apps Script) ---------- */
+/* 기본 저장소(구글 시트) 주소 — 어느 컴퓨터에서 열어도 자동으로 연결됨 */
+const DEFAULT_SYNC_URL = "https://script.google.com/macros/s/AKfycbzz4O7Lkk_qjFNG8zaM_iStf1bw8Nvkxo2yR1jQKIH4Lyxufm5IEhNd2ZcQzK0xKQt2pQ/exec";
 const Cloud = {
-  url(){ return (LS.get("sync_url", "") || "").trim(); },
+  url(){ return (LS.get("sync_url", "") || DEFAULT_SYNC_URL).trim(); },
   pw(){ return LS.get("sync_pw", "") || ""; },
-  on(){ return /^https:\/\/script\.google\.com\/.+\/exec$/.test(this.url()) && !!this.pw(); },
+  on(){ return /^https:\/\/script\.google\.com\/.+\/exec$/.test(this.url()); },
   async call(action, data){
     const res = await fetch(this.url(), {
       method: "POST",
@@ -536,7 +538,6 @@ $("saveSet").onclick = ()=>{
     $("syncState").textContent = "❗ 웹앱 주소는 https://script.google.com/macros/s/ 로 시작하고 /exec 로 끝나야 해요.";
     toast("웹앱 주소가 올바르지 않아요"); return;
   }
-  if (su && !sp){ $("syncState").textContent = "❗ 동기화 암호도 넣어 주세요."; return; }
   if (k) LS.set("ds_key", k);
   LS.set("ds_model", $("model").value);
   const changed = su !== Cloud.url() || sp !== Cloud.pw();

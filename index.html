@@ -233,7 +233,9 @@ function paint(streaming){
     let html = "";
     if (thinking && !markdown) html += `<div class="thinking">🧠 생각 중…\n${esc(thinking.slice(-1500))}</div>`;
     html += `<h1>《${esc(currentTitle)}》</h1>`;
-    html += `<div class="${streaming?'cursor':''}">${render(markdown)}</div>`;
+    /* AI가 본문 맨 앞에 또 쓴 '# 작가, 『제목』' 제목은 위쪽 제목과 겹치므로 화면에서만 뺀다 */
+    const body = markdown.replace(/^\s*#[ \t]+[^\n]*(\n|$)/, "");
+    html += `<div class="${streaming?'cursor':''}">${render(body)}</div>`;
     out.innerHTML = html;
     buildToc();
   });

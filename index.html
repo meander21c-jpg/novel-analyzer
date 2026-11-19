@@ -395,7 +395,7 @@ function setStatus(busy, text){ $("status").innerHTML = (busy?'<span class="dot"
 goBtn.onclick = analyze;
 ["author","title"].forEach(id => $(id).addEventListener("keydown", e => { if(e.key==="Enter" && !e.isComposing) analyze(); }));
 
-/* ---------- 예시 (추천 소설 100편 중 매번 6편을 무작위로 표시) ---------- */
+/* ---------- 기본 추천 목록 (인터넷 추천을 못 받을 때 사용) ---------- */
 const NOVEL_POOL = [
   ["김유정","봄봄"],["김유정","동백꽃"],["한강","소년이 온다"],["한강","채식주의자"],["한강","작별하지 않는다"],
   ["박완서","그 많던 싱아는 누가 다 먹었을까"],["박완서","엄마의 말뚝"],["현진건","운수 좋은 날"],["이효석","메밀꽃 필 무렵"],["김동인","감자"],
@@ -418,24 +418,91 @@ const NOVEL_POOL = [
   ["오스카 와일드","도리언 그레이의 초상"],["버지니아 울프","댈러웨이 부인"],["가즈오 이시구로","남아 있는 나날"],["토니 모리슨","빌러비드"],["마거릿 애트우드","시녀 이야기"],
   ["코맥 매카시","로드"],["주제 사라마구","눈먼 자들의 도시"],["에리히 마리아 레마르크","서부 전선 이상 없다"],["펄 벅","대지"],["이반 투르게네프","아버지와 아들"]
 ];
-const SHOW_COUNT = 6;
-function shuffleExamples(){
-  const pool = NOVEL_POOL.slice();
-  for (let i = pool.length - 1; i > 0; i--){          // 카드 섞기(피셔-예이츠)
-    const j = Math.floor(Math.random() * (i + 1));
-    [pool[i], pool[j]] = [pool[j], pool[i]];
+/* ---------- 인터넷 무작위 추천 (위키데이터) ----------
+   🏅 노벨문학상 수상 작가의 소설  +  🔥 세계적으로 많이 알려진 인기 소설
+   위키데이터(위키백과의 공개 데이터베이스)에서 한국어 제목이 있는 작품만 가져옴.
+   한 번 받은 목록은 7일 동안 브라우저에 보관 → 다음부터는 바로 표시.
+   인터넷이 안 되면 아래 기본 목록(NOVEL_POOL)으로 대신 보여 줌. */
+const SHOW_COUNT = 6;            // 화면에 보이는 추천 개수
+const NOBEL_COUNT = 3;           // 그중 노벨상 작가 작품 수 (나머지는 인기 소설)
+const WD_CACHE_DAYS = 7;
+const WD_URL = "https://query.wikidata.org/sparql?format=json&query=";
+const WD_NOVEL = `{ ?w wdt:P31 wd:Q8261 } UNION { ?w wdt:P7937 wd:Q8261 }
+  FILTER NOT EXISTS { ?w wdt:P31 wd:Q37484 }
+  ?w wdt:P50 ?a.
+  ?w rdfs:label ?wl FILTER(lang(?wl)="ko")
+  ?a rdfs:label ?al FILTER(lang(?al)="ko")`;
+const WD_Q_NOBEL = `SELECT DISTINCT ?w ?wl ?al WHERE { ${WD_NOVEL} ?a wdt:P166 wd:Q37922. }`;
+const WD_Q_POPULAR = `SELECT DISTINCT ?w ?wl ?al ?n WHERE { ${WD_NOVEL} ?w wikibase:sitelinks ?n. FILTER(?n > 20) } ORDER BY DESC(?n) LIMIT 1000`;
+
+let REC = { nobel: [], popular: [] };   // [작가, 제목]
+let recentShown = [];                    // 방금 보여 준 작품은 잠시 다시 안 나오게
+
+function cleanTitle(t){ return String(t).replace(/\s*\([^)]*\)\s*$/, "").trim(); }
+async function wdFetch(q){
+  const res = await fetch(WD_URL + encodeURIComponent(q), { headers: { "Accept": "application/sparql-results+json" } });
+  if (!res.ok) throw new Error("위키데이터 응답 " + res.status);
+  const j = await res.json();
+  const seen = new Set(), out = [];
+  for (const b of j.results.bindings){
+    const a = b.al.value, t = cleanTitle(b.wl.value);
+    if (!t || /^Q\d+$/.test(t) || seen.has(a + "|" + t)) continue;
+    seen.add(a + "|" + t); out.push([a, t]);
   }
+  return out;
+}
+async function loadRecommendations(){
+  const c = LS.get("wd_rec", null);
+  if (c && c.nobel && c.nobel.length && Date.now() - c.time < WD_CACHE_DAYS * 864e5){
+    REC = { nobel: c.nobel, popular: c.popular }; return true;
+  }
+  try{
+    const [nobel, popular] = await Promise.all([wdFetch(WD_Q_NOBEL), wdFetch(WD_Q_POPULAR)]);
+    if (!nobel.length && !popular.length) throw new Error("빈 결과");
+    REC = { nobel, popular };
+    LS.set("wd_rec", { time: Date.now(), nobel, popular });
+    return true;
+  }catch(e){
+    console.warn("인터넷 추천을 불러오지 못해 기본 목록을 사용합니다:", e);
+    if (c && c.nobel){ REC = { nobel: c.nobel, popular: c.popular }; return true; }  // 오래된 보관본이라도 사용
+    return false;
+  }
+}
+function pickRandom(list, n, taken){
+  const res = [], tries = Math.min(list.length * 3, 500);
+  for (let i = 0; i < tries && res.length < n; i++){
+    const it = list[Math.floor(Math.random() * list.length)];
+    const key = it[0] + "|" + it[1];
+    if (taken.has(key) || recentShown.includes(key)) continue;
+    taken.add(key); res.push(it);
+  }
+  return res;
+}
+function shuffleExamples(){
+  const taken = new Set(); let picks = [];
+  if (REC.nobel.length || REC.popular.length){
+    picks = pickRandom(REC.nobel, NOBEL_COUNT, taken).map(x => [...x, "nobel"]);
+    picks = picks.concat(pickRandom(REC.popular, SHOW_COUNT - picks.length, taken).map(x => [...x, "popular"]));
+  }
+  if (picks.length < SHOW_COUNT)
+    picks = picks.concat(pickRandom(NOVEL_POOL, SHOW_COUNT - picks.length, taken).map(x => [...x, "basic"]));
+  recentShown = recentShown.concat(picks.map(p => p[0] + "|" + p[1])).slice(-60);
+
   const box = $("examples"); box.innerHTML = "";
-  pool.slice(0, SHOW_COUNT).forEach(([a,t])=>{
-    const b = document.createElement("button"); b.className="chip"; b.textContent=t;
-    b.title = a; b.onclick = ()=>{ $("author").value=a; $("title").value=t; };
+  const LABEL = { nobel: ["🏅 ", "노벨문학상 수상 작가"], popular: ["🔥 ", "세계적 인기 소설"], basic: ["", "기본 추천"] };
+  picks.forEach(([a, t, kind]) => {
+    const b = document.createElement("button"); b.className = "chip";
+    b.textContent = LABEL[kind][0] + t;
+    b.title = `${a} · ${LABEL[kind][1]}`;
+    b.onclick = () => { $("author").value = a; $("title").value = t; };
     box.appendChild(b);
   });
-  const r = document.createElement("button"); r.className="chip"; r.textContent="🔄 다른 추천";
-  r.title = "추천 소설 다시 섞기"; r.onclick = shuffleExamples;
+  const r = document.createElement("button"); r.className = "chip"; r.textContent = "🔄 다른 추천";
+  r.title = "인터넷에서 새로 골라 오기 (🏅 노벨상 작가 · 🔥 인기 소설)"; r.onclick = shuffleExamples;
   box.appendChild(r);
 }
-shuffleExamples();
+shuffleExamples();                                   // 우선 기본 목록으로 바로 표시
+loadRecommendations().then(ok => { if (ok) { recentShown = []; shuffleExamples(); } });  // 받아지면 인터넷 추천으로 교체
 
 /* ---------- 클라우드 동기화 (구글 시트 + Apps Script) ---------- */
 /* 기본 저장소(구글 시트) 주소 — 어느 컴퓨터에서 열어도 자동으로 연결됨 */

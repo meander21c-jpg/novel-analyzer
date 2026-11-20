@@ -60,6 +60,11 @@ textarea{resize:vertical;min-height:62px}
 .history .x{border:0;background:none;color:var(--muted);cursor:pointer;opacity:0}
 .history li:hover .x{opacity:1}
 .empty-h{color:var(--muted);font-size:13px}
+.history .a{color:var(--muted);font-size:11px;margin-left:4px}
+.books .x{opacity:.4}
+.bk-form{display:flex;flex-direction:column;gap:8px;margin-bottom:14px}
+.bk-form input{padding:9px 12px;font-size:13px}
+.bk-form .primary{margin-top:0;padding:10px;font-size:14px}
 .pager{display:flex;align-items:center;justify-content:center;gap:4px;margin-top:12px;flex-wrap:wrap}
 .pager[hidden]{display:none}
 .pager button{min-width:30px;padding:4px 8px;border:1px solid var(--line);background:transparent;border-radius:8px;font-size:12px;cursor:pointer;color:var(--ink)}
@@ -150,6 +155,17 @@ dialog h2{font-family:"Noto Serif KR";margin:0 0 4px}
       <div class="note" id="syncInfo" style="margin:-6px 0 10px"></div>
       <ul class="history" id="history"></ul>
       <div class="pager" id="pager" hidden></div>
+    </div>
+    <div class="card">
+      <h2 style="display:flex;align-items:center;gap:8px">📖 내가 읽은 소설<span class="note" id="bkCount" style="margin:0 0 0 auto"></span></h2>
+      <div class="note" style="margin:-6px 0 12px">소설을 누르면 위 '분석할 소설'에 채워지고 바로 분석이 시작돼요.</div>
+      <div class="bk-form">
+        <input id="bkTitle" placeholder="소설 제목 (예: 토지)" autocomplete="off">
+        <input id="bkAuthor" placeholder="작가 (예: 박경리)" autocomplete="off">
+        <button class="primary" id="bkAdd" type="button">➕ 읽은 소설 추가</button>
+      </div>
+      <ul class="history books" id="books"></ul>
+      <div class="pager" id="bkPager" hidden></div>
     </div>
   </aside>
 
@@ -668,6 +684,15 @@ const Cloud = {
   }
 };
 let HIST = LS.get("history", []);
+/* 읽은 소설: 구글 시트에는 '분석 기록'과 같은 칸에 제목 앞에 표시(__READ__)를 붙여 저장 → 기존 Apps Script를 고치지 않아도 여러 컴퓨터에서 동기화됨 */
+const BOOK_TAG = "__READ__";
+let BOOKS = LS.get("books", []);
+const isBook = it => String(it.title || "").startsWith(BOOK_TAG);
+const bookToItem = b => ({id: b.id, title: BOOK_TAG + b.title, time: b.time, md: JSON.stringify({a: b.author || ""})});
+const itemToBook = i => {
+  let a = ""; try{ a = JSON.parse(i.md || "{}").a || ""; }catch(e){}
+  return {id: Number(i.id), title: String(i.title).slice(BOOK_TAG.length), author: a, time: i.time || "", synced: true};
+};
 let syncing = false, lastSync = 0;
 function hhmm(){ const d = new Date(); return `${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`; }
 function setSync(state, msg){
@@ -708,14 +733,17 @@ async function syncNow(showToast){
   try{
     const {items} = await Cloud.call("list");
     const cloudIds = new Set(items.map(i => String(i.id)));
-    for (const it of HIST.filter(h => !h.synced && !cloudIds.has(String(h.id)))){
-      await Cloud.call("save", {item: plain(it)});
-      items.push(plain(it));
+    const unsent = HIST.filter(h => !h.synced && !cloudIds.has(String(h.id))).map(plain)
+      .concat(BOOKS.filter(b => !b.synced && !cloudIds.has(String(b.id))).map(bookToItem));
+    for (const it of unsent){
+      await Cloud.call("save", {item: it});
+      items.push(it);
     }
-    HIST = items.map(i => Object.assign(plain(i), {id: Number(i.id), synced: true}))
+    HIST = items.filter(i => !isBook(i)).map(i => Object.assign(plain(i), {id: Number(i.id), synced: true}))
                 .sort((a, b) => b.id - a.id);
-    saveLocal(); loadHistory(); setSync("ok"); lastSync = Date.now();
-    if (showToast) toast(`클라우드와 동기화했어요 (${HIST.length}건)`);
+    BOOKS = items.filter(isBook).map(itemToBook).sort((a, b) => b.id - a.id);
+    saveLocal(); saveBooks(); loadHistory(); loadBooks(); setSync("ok"); lastSync = Date.now();
+    if (showToast) toast(`클라우드와 동기화했어요 (분석 ${HIST.length}건 · 읽은 소설 ${BOOKS.length}권)`);
     return true;
   }catch(e){ setSync("err", e.message); if (showToast) toast("동기화 실패: " + e.message); return false; }
   finally{ syncing = false; }
@@ -730,33 +758,36 @@ document.addEventListener("visibilitychange", () => {
 const PAGE_SIZE = 10;
 let histPage = 1;
 function renderPager(total){
-  const pg = $("pager");
+  buildPager($("pager"), total, histPage, p => { histPage = p; loadHistory(); });
+}
+/* 페이지 번호 버튼 만들기 — 분석 기록과 읽은 소설이 함께 사용 (pg: 버튼이 들어갈 칸, page: 현재 쪽, go: 쪽을 눌렀을 때 실행) */
+function buildPager(pg, total, page, go){
   const pages = Math.ceil(total / PAGE_SIZE);
   if (pages <= 1){ pg.hidden = true; pg.innerHTML = ""; return; }
   pg.hidden = false; pg.innerHTML = "";
-  const add = (label, page, opts = {}) => {
+  const add = (label, target, opts = {}) => {
     const b = document.createElement("button");
     b.textContent = label; b.type = "button";
     if (opts.on) b.className = "on";
     if (opts.disabled || opts.on) b.disabled = !!opts.disabled;
     if (opts.title) b.title = opts.title;
-    if (!opts.on && !opts.disabled) b.onclick = () => { histPage = page; loadHistory(); };
+    if (!opts.on && !opts.disabled) b.onclick = () => go(target);
     pg.appendChild(b);
   };
   const gap = () => { const g = document.createElement("span"); g.className = "gap"; g.textContent = "…"; pg.appendChild(g); };
-  add("◀", histPage - 1, {disabled: histPage === 1, title: "이전 페이지"});
+  add("◀", page - 1, {disabled: page === 1, title: "이전 페이지"});
   // 페이지가 많으면 처음·끝·현재 주변만 표시
   const show = [];
   for (let i = 1; i <= pages; i++){
-    if (i === 1 || i === pages || Math.abs(i - histPage) <= 1) show.push(i);
+    if (i === 1 || i === pages || Math.abs(i - page) <= 1) show.push(i);
   }
   let prev = 0;
   show.forEach(i => {
     if (i - prev > 1) gap();
-    add(String(i), i, {on: i === histPage});
+    add(String(i), i, {on: i === page});
     prev = i;
   });
-  add("▶", histPage + 1, {disabled: histPage === pages, title: "다음 페이지"});
+  add("▶", page + 1, {disabled: page === pages, title: "다음 페이지"});
 }
 function loadHistory(){
   const all = HIST;
@@ -785,6 +816,83 @@ function loadHistory(){
     ul.appendChild(li);
   });
 }
+
+/* ---------- 읽은 소설 ---------- */
+let bookPage = 1;
+function saveBooks(){
+  let b = BOOKS.slice();
+  while (b.length && !LS.set("books", b)) b.pop();
+  if (!b.length) LS.set("books", []);
+}
+const normBook = s => String(s || "").replace(/\s+/g, "").toLowerCase();
+async function addBook(){
+  const title = $("bkTitle").value.trim(), author = $("bkAuthor").value.trim();
+  if (!title){ $("bkTitle").focus(); toast("읽은 소설의 제목을 입력해 주세요"); return; }
+  if (BOOKS.some(b => normBook(b.title) === normBook(title) && normBook(b.author) === normBook(author))){
+    toast("이미 저장된 소설이에요"); return;
+  }
+  const d = new Date();
+  const time = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`;
+  const book = {id: Date.now(), title, author, time};
+  BOOKS.unshift(book); bookPage = 1; saveBooks(); loadBooks();
+  $("bkTitle").value = ""; $("bkAuthor").value = ""; $("bkTitle").focus();
+  if (!Cloud.on()){ toast("읽은 소설을 이 브라우저에 저장했어요"); return; }
+  try{
+    await Cloud.call("save", {item: bookToItem(book)});
+    book.synced = true; saveBooks(); toast("읽은 소설을 클라우드에 저장했어요");
+  }catch(e){ toast("이 브라우저엔 저장됐지만 클라우드 저장은 실패했어요"); }
+}
+async function deleteBook(id){
+  const b = BOOKS.find(x => String(x.id) === String(id));
+  if (b && b.synced && Cloud.on()){
+    try{ await Cloud.call("delete", {id: String(id)}); }
+    catch(e){ toast("클라우드에서 삭제하지 못했어요: " + e.message); return; }
+  }
+  BOOKS = BOOKS.filter(x => String(x.id) !== String(id)); saveBooks(); loadBooks();
+}
+/* 읽은 소설을 누르면: 위 '분석할 소설' 칸을 채우고 바로 분석 시작 */
+function analyzeBook(b){
+  if (controller){ toast("지금 다른 소설을 분석하는 중이에요. 끝난 뒤에 눌러 주세요"); return; }
+  $("author").value = b.author || ""; $("title").value = b.title;
+  $("year").value = ""; delete $("year").dataset.auto;
+  window.scrollTo({top:0, behavior:"smooth"});
+  analyze();
+}
+function loadBooks(){
+  const all = BOOKS, ul = $("books");
+  ul.innerHTML = "";
+  $("bkCount").textContent = all.length ? `${all.length}권` : "";
+  if (!all.length){
+    buildPager($("bkPager"), 0, 1, () => {});
+    ul.innerHTML = `<div class="empty-h">아직 저장한 소설이 없어요.<br>읽은 소설을 위에서 추가해 보세요.</div>`;
+    return;
+  }
+  const pages = Math.ceil(all.length / PAGE_SIZE);
+  if (bookPage > pages) bookPage = pages;
+  if (bookPage < 1) bookPage = 1;
+  buildPager($("bkPager"), all.length, bookPage, p => { bookPage = p; loadBooks(); });   // 10권을 넘으면 페이지 버튼이 나타남
+  all.slice((bookPage - 1) * PAGE_SIZE, bookPage * PAGE_SIZE).forEach(b => {
+    const li = document.createElement("li");
+    li.title = "누르면 이 소설의 분석을 시작해요";
+    li.innerHTML = `<span class="t">📗 ${esc(b.title)}${b.author ? `<span class="a">${esc(b.author)}</span>` : ""}</span><button class="x" title="삭제">✕</button>`;
+    li.onclick = e => {
+      if (e.target.classList.contains("x")){
+        e.stopPropagation();
+        if (!confirm(`'${b.title}'을(를) 읽은 소설 목록에서 삭제할까요?`)) return;
+        deleteBook(b.id); return;
+      }
+      analyzeBook(b);
+    };
+    ul.appendChild(li);
+  });
+}
+$("bkAdd").onclick = addBook;
+["bkTitle","bkAuthor"].forEach(id => $(id).addEventListener("keydown", e => {
+  if (e.key !== "Enter" || e.isComposing) return;
+  e.preventDefault();
+  if (id === "bkTitle" && !$("bkAuthor").value.trim()){ $("bkAuthor").focus(); return; }
+  addBook();
+}));
 
 /* ---------- 도구 ---------- */
 function toast(msg){ const t=$("toast"); t.textContent=msg; t.classList.add("show"); clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove("show"),2200); }
@@ -828,7 +936,7 @@ $("saveSet").onclick = ()=>{
   LS.set("sync_url", su); LS.set("sync_pw", sp);
   $("setDlg").close(); toast("설정을 저장했어요");
   if (changed){
-    if (Cloud.on()) HIST.forEach(h => delete h.synced);   // 새 저장소엔 이 브라우저 기록을 모두 올림
+    if (Cloud.on()){ HIST.forEach(h => delete h.synced); BOOKS.forEach(b => delete b.synced); }   // 새 저장소엔 이 브라우저 기록을 모두 올림
     loadHistory(); syncNow(true);
   }
 };
@@ -855,7 +963,7 @@ function takeKeyFromHash(){
 takeKeyFromHash();
 window.addEventListener("hashchange", takeKeyFromHash);
 
-loadHistory();
+loadHistory(); loadBooks();
 if (Cloud.on()) syncNow(false); else setSync("off");
 if (!validKey(LS.get("ds_key", ""))) openSettings();
 </script>

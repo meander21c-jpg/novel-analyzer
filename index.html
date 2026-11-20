@@ -62,6 +62,8 @@ textarea{resize:vertical;min-height:62px}
 .empty-h{color:var(--muted);font-size:13px}
 .history .a{color:var(--muted);font-size:11px;margin-left:4px}
 .books .x{opacity:.4}
+.books .go{border:1px solid var(--line);background:transparent;border-radius:8px;padding:2px 8px;font-size:12px;cursor:pointer;color:var(--accent);white-space:nowrap}
+.books .go:hover{background:var(--accent);border-color:var(--accent);color:#fff}
 .bk-form{display:flex;flex-direction:column;gap:8px;margin-bottom:14px}
 .bk-form input{padding:9px 12px;font-size:13px}
 .bk-form .primary{margin-top:0;padding:10px;font-size:14px}
@@ -158,7 +160,7 @@ dialog h2{font-family:"Noto Serif KR";margin:0 0 4px}
     </div>
     <div class="card">
       <h2 style="display:flex;align-items:center;gap:8px">📖 내가 읽은 소설<span class="note" id="bkCount" style="margin:0 0 0 auto"></span></h2>
-      <div class="note" style="margin:-6px 0 12px">소설을 누르면 위 '분석할 소설'에 채워지고 바로 분석이 시작돼요.</div>
+      <div class="note" style="margin:-6px 0 12px">제목·작가만 저장돼요. 소설을 누르면 위 입력칸에 채워지고, <b>🔍 분석</b> 버튼을 누를 때만 분석해요.</div>
       <div class="bk-form">
         <input id="bkTitle" placeholder="소설 제목 (예: 토지)" autocomplete="off">
         <input id="bkAuthor" placeholder="작가 (예: 박경리)" autocomplete="off">
@@ -850,12 +852,20 @@ async function deleteBook(id){
   }
   BOOKS = BOOKS.filter(x => String(x.id) !== String(id)); saveBooks(); loadBooks();
 }
-/* 읽은 소설을 누르면: 위 '분석할 소설' 칸을 채우고 바로 분석 시작 */
-function analyzeBook(b){
-  if (controller){ toast("지금 다른 소설을 분석하는 중이에요. 끝난 뒤에 눌러 주세요"); return; }
+/* 읽은 소설을 누르면: 위 '분석할 소설' 칸만 채움 (분석은 시작하지 않음) */
+function fillBook(b){
   $("author").value = b.author || ""; $("title").value = b.title;
   $("year").value = ""; delete $("year").dataset.auto;
   window.scrollTo({top:0, behavior:"smooth"});
+  toast("위 입력칸에 채웠어요. 분석하려면 '분석 시작'을 누르세요");
+}
+/* '🔍 분석' 버튼: 이미 분석 기록이 있으면 한 번 물어본 뒤 분석 시작 */
+function analyzeBook(b){
+  if (controller){ toast("지금 다른 소설을 분석하는 중이에요. 끝난 뒤에 눌러 주세요"); return; }
+  const t = normBook(b.title), a = normBook(b.author);
+  const done = HIST.some(h => { const n = normBook(h.title); return n.includes(t) && (!a || n.includes(a)); });
+  if (done && !confirm(`'${b.title}'은(는) 분석 기록에 이미 있어요.\n그래도 새로 분석할까요? (AI 비용이 들어요)`)) return;
+  fillBook(b);
   analyze();
 }
 function loadBooks(){
@@ -873,15 +883,16 @@ function loadBooks(){
   buildPager($("bkPager"), all.length, bookPage, p => { bookPage = p; loadBooks(); });   // 10권을 넘으면 페이지 버튼이 나타남
   all.slice((bookPage - 1) * PAGE_SIZE, bookPage * PAGE_SIZE).forEach(b => {
     const li = document.createElement("li");
-    li.title = "누르면 이 소설의 분석을 시작해요";
-    li.innerHTML = `<span class="t">📗 ${esc(b.title)}${b.author ? `<span class="a">${esc(b.author)}</span>` : ""}</span><button class="x" title="삭제">✕</button>`;
+    li.innerHTML = `<span class="t">📗 ${esc(b.title)}${b.author ? `<span class="a">${esc(b.author)}</span>` : ""}</span><button class="go" title="이 소설 분석하기">🔍 분석</button><button class="x" title="삭제">✕</button>`;
+    li.title = "누르면 위 입력칸에 채워져요 (분석은 🔍 버튼)";
     li.onclick = e => {
+      if (e.target.classList.contains("go")){ e.stopPropagation(); analyzeBook(b); return; }
       if (e.target.classList.contains("x")){
         e.stopPropagation();
         if (!confirm(`'${b.title}'을(를) 읽은 소설 목록에서 삭제할까요?`)) return;
         deleteBook(b.id); return;
       }
-      analyzeBook(b);
+      fillBook(b);
     };
     ul.appendChild(li);
   });

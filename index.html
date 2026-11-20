@@ -583,6 +583,29 @@ function pickRandom(list, n, taken){
   }
   return res;
 }
+/* 소설 제목을 누르면 발행 연도를 자동으로 찾아 채움 (DeepSeek에 짧게 물어봄) */
+let yearReq = 0;
+async function autoYear(author, title){
+  const key = LS.get("ds_key", "");
+  const yi = $("year"), my = ++yearReq;
+  if (!validKey(key)){ toast("⚙ 설정에 DeepSeek API 키를 넣으면 발행 연도가 자동으로 채워져요"); return; }
+  const oldPh = yi.placeholder; yi.placeholder = "발행 연도 찾는 중…";
+  try{
+    const res = await fetch("https://api.deepseek.com/chat/completions", {
+      method:"POST",
+      headers:{"Content-Type":"application/json", "Authorization":"Bearer " + key},
+      body: JSON.stringify({model:"deepseek-chat", stream:false, temperature:0, max_tokens:20,
+        messages:[
+          {role:"system", content:"문학 작품의 최초 발표(출간) 연도를 알려 주는 도우미입니다. 반드시 숫자 4자리 연도만 답하세요. 확실하지 않으면 '모름'이라고만 답하세요."},
+          {role:"user", content:`작가: ${author}\n소설 제목: ${title}\n이 소설이 처음 발표(출간)된 연도는?`}]})
+    });
+    if (!res.ok) throw new Error(res.status);
+    const j = await res.json();
+    const m = String(j.choices[0].message.content || "").match(/\b(1[0-9]{3}|20[0-9]{2})\b/);
+    if (my === yearReq && m && !yi.value.trim() && $("title").value.trim() === title) yi.value = m[1];
+  }catch(e){ console.warn("발행 연도 자동 조회 실패:", e); }
+  finally{ if (my === yearReq) yi.placeholder = oldPh; }
+}
 function shuffleExamples(){
   const taken = new Set(); let picks = [];
   if (REC.nobel.length || REC.popular.length){
@@ -599,7 +622,7 @@ function shuffleExamples(){
     const b = document.createElement("button"); b.className = "chip";
     b.textContent = LABEL[kind][0] + t;
     b.title = `${a} · ${LABEL[kind][1]}`;
-    b.onclick = () => { $("author").value = a; $("title").value = t; $("year").value = ""; };
+    b.onclick = () => { $("author").value = a; $("title").value = t; $("year").value = ""; autoYear(a, t); };
     box.appendChild(b);
   });
   const r = document.createElement("button"); r.className = "chip"; r.textContent = "🔄 다른 추천";

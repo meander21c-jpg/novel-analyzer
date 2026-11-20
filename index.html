@@ -408,7 +408,19 @@ function showRetry(why){
 }
 function setStatus(busy, text){ $("status").innerHTML = (busy?'<span class="dot"></span>':'') + esc(text); }
 goBtn.onclick = analyze;
-["author","title"].forEach(id => $(id).addEventListener("keydown", e => { if(e.key==="Enter" && !e.isComposing) analyze(); }));
+/* 엔터 키는 분석을 시작하지 않음 — 분석은 '분석 시작' 버튼을 눌렀을 때만 실행.
+   작가 칸에서 엔터 → 제목 칸으로 이동 / 제목 칸에서 엔터 → 발행 연도 자동 입력 */
+$("year").addEventListener("input", () => { delete $("year").dataset.auto; });   // 사용자가 직접 고치면 자동 입력 표시 해제
+["author","title"].forEach(id => $(id).addEventListener("keydown", e => {
+  if (e.key !== "Enter" || e.isComposing) return;
+  e.preventDefault();
+  const a = $("author").value.trim(), t = $("title").value.trim(), yi = $("year");
+  if (id === "author" && !t){ $("title").focus(); return; }
+  if (!t){ toast("소설 제목을 입력해 주세요"); return; }
+  if (!yi.value.trim() || yi.dataset.auto === "1"){   // 비어 있거나 이전에 자동으로 채운 연도면 새로 조회
+    yi.value = ""; delete yi.dataset.auto; autoYear(a, t);
+  }
+}));
 
 /* ---------- 기본 추천 목록 (인터넷 추천을 못 받을 때 사용) ---------- */
 const NOVEL_POOL = [
@@ -606,7 +618,7 @@ async function autoYear(author, title){
     if (!res.ok) throw new Error(res.status);
     const j = await res.json();
     const m = String(j.choices[0].message.content || "").match(/\b(1[0-9]{3}|20[0-9]{2})\b/);
-    if (my === yearReq && m && !yi.value.trim() && $("title").value.trim() === title) yi.value = m[1];
+    if (my === yearReq && m && !yi.value.trim() && $("title").value.trim() === title){ yi.value = m[1]; yi.dataset.auto = "1"; }
   }catch(e){ console.warn("발행 연도 자동 조회 실패:", e); }
   finally{ if (my === yearReq) yi.placeholder = oldPh; }
 }

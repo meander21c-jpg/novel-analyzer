@@ -56,6 +56,13 @@ textarea{resize:vertical;min-height:62px}
 .history .x{border:0;background:none;color:var(--muted);cursor:pointer;opacity:0}
 .history li:hover .x{opacity:1}
 .empty-h{color:var(--muted);font-size:13px}
+.pager{display:flex;align-items:center;justify-content:center;gap:4px;margin-top:12px;flex-wrap:wrap}
+.pager[hidden]{display:none}
+.pager button{min-width:30px;padding:4px 8px;border:1px solid var(--line);background:transparent;border-radius:8px;font-size:12px;cursor:pointer;color:var(--ink)}
+.pager button:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
+.pager button.on{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:700;cursor:default}
+.pager button:disabled{opacity:.4;cursor:default}
+.pager .gap{color:var(--muted);font-size:12px}
 main{min-width:0}
 .toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:14px}
 .toolbar[hidden]{display:none}
@@ -136,6 +143,7 @@ dialog h2{font-family:"Noto Serif KR";margin:0 0 4px}
       <h2 style="display:flex;align-items:center;gap:8px">🗂️ 분석 기록<button class="icon-btn" id="syncBtn" title="지금 동기화" style="margin-left:auto;padding:3px 9px;font-size:12px">🔄</button></h2>
       <div class="note" id="syncInfo" style="margin:-6px 0 10px"></div>
       <ul class="history" id="history"></ul>
+      <div class="pager" id="pager" hidden></div>
     </div>
   </aside>
 
@@ -540,7 +548,7 @@ function saveLocal(){
 }
 const plain = it => ({id: it.id, title: it.title, time: it.time, md: it.md});
 async function addHistory(item){
-  HIST.unshift(item); saveLocal(); loadHistory();
+  HIST.unshift(item); histPage = 1; saveLocal(); loadHistory();
   if (!Cloud.on()){ toast("분석 완료! 이 브라우저 기록에 저장했어요"); return; }
   setSync("busy");
   try{
@@ -583,10 +591,47 @@ document.addEventListener("visibilitychange", () => {
 });
 
 /* ---------- 기록 ---------- */
+const PAGE_SIZE = 10;
+let histPage = 1;
+function renderPager(total){
+  const pg = $("pager");
+  const pages = Math.ceil(total / PAGE_SIZE);
+  if (pages <= 1){ pg.hidden = true; pg.innerHTML = ""; return; }
+  pg.hidden = false; pg.innerHTML = "";
+  const add = (label, page, opts = {}) => {
+    const b = document.createElement("button");
+    b.textContent = label; b.type = "button";
+    if (opts.on) b.className = "on";
+    if (opts.disabled || opts.on) b.disabled = !!opts.disabled;
+    if (opts.title) b.title = opts.title;
+    if (!opts.on && !opts.disabled) b.onclick = () => { histPage = page; loadHistory(); };
+    pg.appendChild(b);
+  };
+  const gap = () => { const g = document.createElement("span"); g.className = "gap"; g.textContent = "…"; pg.appendChild(g); };
+  add("◀", histPage - 1, {disabled: histPage === 1, title: "이전 페이지"});
+  // 페이지가 많으면 처음·끝·현재 주변만 표시
+  const show = [];
+  for (let i = 1; i <= pages; i++){
+    if (i === 1 || i === pages || Math.abs(i - histPage) <= 1) show.push(i);
+  }
+  let prev = 0;
+  show.forEach(i => {
+    if (i - prev > 1) gap();
+    add(String(i), i, {on: i === histPage});
+    prev = i;
+  });
+  add("▶", histPage + 1, {disabled: histPage === pages, title: "다음 페이지"});
+}
 function loadHistory(){
-  const list = HIST;
+  const all = HIST;
   const ul = $("history"); ul.innerHTML = "";
-  if (!list.length){ ul.innerHTML = `<div class="empty-h">아직 분석 기록이 없어요.<br>${Cloud.on() ? "기록은 클라우드(구글 시트)에 저장돼요." : "기록은 이 브라우저에만 저장돼요."}</div>`; return; }
+  if (!all.length){ renderPager(0); ul.innerHTML = `<div class="empty-h">아직 분석 기록이 없어요.<br>${Cloud.on() ? "기록은 클라우드(구글 시트)에 저장돼요." : "기록은 이 브라우저에만 저장돼요."}</div>`; return; }
+  // 삭제 등으로 마지막 페이지가 사라진 경우 보정
+  const pages = Math.ceil(all.length / PAGE_SIZE);
+  if (histPage > pages) histPage = pages;
+  if (histPage < 1) histPage = 1;
+  const list = all.slice((histPage - 1) * PAGE_SIZE, histPage * PAGE_SIZE);
+  renderPager(all.length);
   list.forEach(it=>{
     const li = document.createElement("li");
     li.innerHTML = `<span class="t">📕 ${esc(it.title)}</span><span class="d">${esc(it.time.slice(5))}</span><button class="x" title="삭제">✕</button>`;

@@ -1083,6 +1083,21 @@ function takeKeyFromHash(){
 takeKeyFromHash();
 window.addEventListener("hashchange", takeKeyFromHash);
 
+/* '추가 요청' 칸 안내 문구: 열 때마다 다른 예시가 무작위로 나옴 */
+const EXTRA_HINTS = [
+  "독서 모임에서 토론할 수 있게 질문을 10개로 늘려서",
+  "중학생 아이와 함께 읽을 수 있게 쉬운 말로",
+  "결말의 반전과 복선을 중심으로 자세히",
+  "주인공의 심리 변화를 시간 순서대로 짚어서",
+  "이 소설이 쓰인 시대 배경을 더 깊이 설명해서",
+  "비슷한 분위기의 다른 소설 3권도 추천해서",
+  "인물 관계를 표로 더 꼼꼼하게 정리해서",
+  "직장인이 삶에 바로 적용할 교훈 중심으로",
+  "명장면과 인상 깊은 문장을 중심으로",
+  "처음 읽는 사람을 위해 어려운 낱말 풀이를 곁들여서"
+];
+$("extra").placeholder = "예: " + EXTRA_HINTS[Math.floor(Math.random() * EXTRA_HINTS.length)];
+
 loadHistory(); loadBooks();
 if (Cloud.on()) syncNow(false); else setSync("off");
 if (!validKey(LS.get("ds_key", ""))) openSettings();

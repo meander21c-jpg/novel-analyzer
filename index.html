@@ -63,7 +63,14 @@ textarea{resize:vertical;min-height:62px}
 .history .a{color:var(--muted);font-size:11px;margin-left:4px}
 .books .x{opacity:.4}
 .books .go{border:1px solid var(--line);background:transparent;border-radius:8px;padding:2px 8px;font-size:12px;cursor:pointer;color:var(--accent);white-space:nowrap}
-.books .go:hover{background:var(--accent);border-color:var(--accent);color:#fff}
+.books .go:hover,.qres .go:hover:not(:disabled){background:var(--accent);border-color:var(--accent);color:#fff}
+.qres .go{border:1px solid var(--line);background:transparent;border-radius:8px;padding:2px 8px;font-size:12px;cursor:pointer;color:var(--accent);white-space:nowrap}
+.qres .go:disabled{color:var(--muted);cursor:default}
+.q-row{display:flex;gap:6px}
+.q-row input{flex:1;width:auto;min-width:0;padding:9px 12px;font-size:13px}
+.q-row button{white-space:nowrap;font-size:13px}
+.qhead{font-size:13px;font-weight:700;margin:14px 0 6px}
+.qmsg{font-size:13px;color:var(--muted);margin-top:12px}
 .bk-form{display:flex;flex-direction:column;gap:8px;margin-bottom:14px}
 .bk-form input{padding:9px 12px;font-size:13px}
 .bk-form .primary{margin-top:0;padding:10px;font-size:14px}
@@ -168,6 +175,15 @@ dialog h2{font-family:"Noto Serif KR";margin:0 0 4px}
       </div>
       <ul class="history books" id="books"></ul>
       <div class="pager" id="bkPager" hidden></div>
+    </div>
+    <div class="card">
+      <h2>🔎 작가·소설 찾기</h2>
+      <div class="note" style="margin:-6px 0 6px">AI가 알려 주는 정보라 틀릴 수 있어요. 중요한 건 한 번 더 확인해 주세요.</div>
+      <label for="qAuthor">작가로 소설 찾기</label>
+      <div class="q-row"><input id="qAuthor" placeholder="작가 이름 (예: 박경리)" autocomplete="off"><button class="icon-btn" id="qAuthorGo" type="button">🔍 찾기</button></div>
+      <label for="qTitle">제목으로 작가 찾기</label>
+      <div class="q-row"><input id="qTitle" placeholder="소설 제목 (예: 토지)" autocomplete="off"><button class="icon-btn" id="qTitleGo" type="button">🔍 찾기</button></div>
+      <div id="qOut"></div>
     </div>
   </aside>
 
@@ -827,8 +843,9 @@ function saveBooks(){
   if (!b.length) LS.set("books", []);
 }
 const normBook = s => String(s || "").replace(/\s+/g, "").toLowerCase();
-async function addBook(){
-  const title = $("bkTitle").value.trim(), author = $("bkAuthor").value.trim();
+/* 읽은 소설 저장 (fromForm: 직접 입력 칸에서 눌렀는지 / 아니면 '찾기' 결과에서 담기) */
+async function addBook(title, author, fromForm){
+  title = (title || "").trim(); author = (author || "").trim();
   if (!title){ $("bkTitle").focus(); toast("읽은 소설의 제목을 입력해 주세요"); return; }
   if (BOOKS.some(b => normBook(b.title) === normBook(title) && normBook(b.author) === normBook(author))){
     toast("이미 저장된 소설이에요"); return;
@@ -837,7 +854,8 @@ async function addBook(){
   const time = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`;
   const book = {id: Date.now(), title, author, time};
   BOOKS.unshift(book); bookPage = 1; saveBooks(); loadBooks();
-  $("bkTitle").value = ""; $("bkAuthor").value = ""; $("bkTitle").focus();
+  if (fromForm){ $("bkTitle").value = ""; $("bkAuthor").value = ""; $("bkTitle").focus(); }
+  renderQ();
   if (!Cloud.on()){ toast("읽은 소설을 이 브라우저에 저장했어요"); return; }
   try{
     await Cloud.call("save", {item: bookToItem(book)});
@@ -897,12 +915,103 @@ function loadBooks(){
     ul.appendChild(li);
   });
 }
-$("bkAdd").onclick = addBook;
+$("bkAdd").onclick = () => addBook($("bkTitle").value, $("bkAuthor").value, true);
 ["bkTitle","bkAuthor"].forEach(id => $(id).addEventListener("keydown", e => {
   if (e.key !== "Enter" || e.isComposing) return;
   e.preventDefault();
   if (id === "bkTitle" && !$("bkAuthor").value.trim()){ $("bkAuthor").focus(); return; }
-  addBook();
+  addBook($("bkTitle").value, $("bkAuthor").value, true);
+}));
+
+/* ---------- 작가·소설 찾기 (DeepSeek에 물어봄) ---------- */
+let qReq = 0, lastQ = null;
+async function askJSON(system, user){
+  const key = LS.get("ds_key", "");
+  if (!validKey(key)){ openSettings(); throw new Error("먼저 ⚙ 설정에 DeepSeek API 키를 넣어 주세요."); }
+  const res = await fetch("https://api.deepseek.com/chat/completions", {
+    method:"POST",
+    headers:{"Content-Type":"application/json", "Authorization":"Bearer " + key},
+    body: JSON.stringify({model:"deepseek-chat", stream:false, temperature:0, max_tokens:1800,
+      response_format:{type:"json_object"},
+      messages:[{role:"system", content:system},{role:"user", content:user}]})
+  });
+  if (!res.ok){
+    const hint = {401:"API 키가 올바르지 않아요.", 402:"DeepSeek 잔액이 부족해요.", 429:"요청이 너무 많아요. 잠시 후 다시 해 주세요."}[res.status] || "잠시 후 다시 시도해 주세요.";
+    throw new Error(`DeepSeek 오류 ${res.status} — ${hint}`);
+  }
+  const j = await res.json();
+  return JSON.parse(j.choices[0].message.content);
+}
+const Q_AUTHOR_SYS = `당신은 문학 도서 정보 도우미입니다. 사용자가 작가 이름을 주면, 그 작가가 쓴 소설(장편·중편·소설집)을 JSON으로만 답하세요.
+형식: {"author":"정확한 작가 이름(한글, 외국 작가는 한글 표기)","works":[{"title":"한글 제목","year":"최초 발표(출간) 연도 4자리 숫자, 모르면 빈 문자열"}]}
+규칙: 확실히 아는 작품만 쓰고 절대 지어내지 마세요. 대표작 위주로 최대 15편, 발표 연도 순서. 시·수필·평론은 제외. 모르는 작가이면 works를 빈 배열로 두세요.`;
+const Q_TITLE_SYS = `당신은 문학 도서 정보 도우미입니다. 사용자가 소설 제목을 주면, 그 제목의 소설과 작가를 JSON으로만 답하세요.
+형식: {"candidates":[{"author":"작가 이름(한글, 외국 작가는 한글 표기)","title":"정확한 한글 제목","year":"최초 발표(출간) 연도 4자리 숫자, 모르면 빈 문자열"}]}
+규칙: 확실히 아는 작품만 쓰고 절대 지어내지 마세요. 같은 제목의 서로 다른 작품이 있으면 최대 5개까지 모두 쓰세요. 모르는 제목이면 candidates를 빈 배열로 두세요.`;
+async function runQ(kind){
+  const input = $(kind === "author" ? "qAuthor" : "qTitle"), btn = $(kind === "author" ? "qAuthorGo" : "qTitleGo");
+  const q = input.value.trim();
+  if (!q){ input.focus(); toast(kind === "author" ? "작가 이름을 입력해 주세요" : "소설 제목을 입력해 주세요"); return; }
+  const my = ++qReq, old = btn.textContent;
+  btn.disabled = true; btn.textContent = "찾는 중…";
+  $("qOut").innerHTML = `<div class="qmsg">AI에게 물어보는 중…</div>`;
+  try{
+    let rows, head;
+    if (kind === "author"){
+      const r = await askJSON(Q_AUTHOR_SYS, `작가: ${q}`);
+      const a = String(r.author || q).trim();
+      rows = (r.works || []).filter(w => w && w.title).map(w => ({author: a, title: String(w.title).trim(), year: String(w.year || "").match(/\d{4}/)?.[0] || ""}));
+      head = `✍️ ${a} 의 소설`;
+    } else {
+      const r = await askJSON(Q_TITLE_SYS, `소설 제목: ${q}`);
+      rows = (r.candidates || []).filter(c => c && c.title && c.author).map(c => ({author: String(c.author).trim(), title: String(c.title).trim(), year: String(c.year || "").match(/\d{4}/)?.[0] || ""}));
+      head = `📚 《${q}》의 작가`;
+    }
+    if (my !== qReq) return;
+    lastQ = {kind, head, rows};
+    renderQ();
+  }catch(e){
+    if (my !== qReq) return;
+    lastQ = null;
+    $("qOut").innerHTML = `<div class="qmsg" style="color:#c0392b">⚠️ ${esc(e.message || String(e))}</div>`;
+  }finally{ btn.disabled = false; btn.textContent = old; }
+}
+function renderQ(){
+  const box = $("qOut");
+  if (!lastQ){ return; }
+  const {kind, head, rows} = lastQ;
+  if (!rows.length){
+    box.innerHTML = `<div class="qmsg">${kind === "author" ? "그 작가의 소설을 찾지 못했어요." : "그 제목의 소설을 찾지 못했어요."} 철자를 확인하고 다시 해 보세요.</div>`;
+    return;
+  }
+  box.innerHTML = `<div class="qhead">${esc(head)}</div>`;
+  const ul = document.createElement("ul"); ul.className = "history qres";
+  rows.forEach(r => {
+    const li = document.createElement("li");
+    const saved = BOOKS.some(b => normBook(b.title) === normBook(r.title) && normBook(b.author) === normBook(r.author));
+    const sub = kind === "author" ? (r.year ? `${r.year}` : "") : `${r.author}${r.year ? " · " + r.year : ""}`;
+    li.title = "누르면 위 '분석할 소설' 칸에 채워져요 (분석은 시작하지 않아요)";
+    li.innerHTML = `<span class="t">📗 ${esc(r.title)}${sub ? `<span class="a">${esc(sub)}</span>` : ""}</span><button class="go" ${saved ? "disabled" : ""} title="읽은 소설 목록에 저장">${saved ? "✔ 저장됨" : "➕ 읽음"}</button>`;
+    li.onclick = e => {
+      if (e.target.classList.contains("go")){
+        e.stopPropagation();
+        if (!saved) addBook(r.title, r.author, false);
+        return;
+      }
+      $("author").value = r.author; $("title").value = r.title;
+      $("year").value = r.year || ""; if (r.year) $("year").dataset.auto = "1"; else delete $("year").dataset.auto;
+      window.scrollTo({top:0, behavior:"smooth"});
+      toast("위 입력칸에 채웠어요. 분석하려면 '분석 시작'을 누르세요");
+    };
+    ul.appendChild(li);
+  });
+  box.appendChild(ul);
+}
+$("qAuthorGo").onclick = () => runQ("author");
+$("qTitleGo").onclick = () => runQ("title");
+[["qAuthor","author"],["qTitle","title"]].forEach(([id, kind]) => $(id).addEventListener("keydown", e => {
+  if (e.key !== "Enter" || e.isComposing) return;
+  e.preventDefault(); runQ(kind);
 }));
 
 /* ---------- 도구 ---------- */

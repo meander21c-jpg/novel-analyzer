@@ -134,6 +134,8 @@ dialog h2{font-family:"Noto Serif KR";margin:0 0 4px}
       <input id="author" placeholder="예: 박경리" autocomplete="off">
       <label for="title">소설 제목 *</label>
       <input id="title" placeholder="예: 토지" autocomplete="off">
+      <label for="year">저자가 발행한 연도 (선택)</label>
+      <input id="year" placeholder="예: 1994" inputmode="numeric" maxlength="10" autocomplete="off">
       <label for="extra">추가 요청 (선택)</label>
       <textarea id="extra" placeholder="예: 고등학생 눈높이로, 2부 위주로 더 자세히"></textarea>
       <button class="primary" id="goBtn">📚 분석 시작</button>
@@ -299,14 +301,14 @@ const SYSTEM_PROMPT = `당신은 국내외 문학에 정통한 문학평론가�
 /* ---------- 분석 ---------- */
 async function analyze(){
   if (controller){ controller.abort(); return; }
-  const author = $("author").value.trim(), title = $("title").value.trim();
+  const author = $("author").value.trim(), title = $("title").value.trim(), year = $("year").value.trim();
   if (!title){ $("title").focus(); toast("소설 제목을 입력해 주세요"); return; }
   const key = LS.get("ds_key", "");
   if (!validKey(key)){ openSettings(); toast("먼저 올바른 DeepSeek API 키를 넣어 주세요"); return; }
   const model = LS.get("ds_model", "deepseek-chat");
   const extra = $("extra").value.trim();
   markdown = ""; thinking = ""; currentFile = "";
-  currentTitle = title + (author ? " — " + author : "");
+  currentTitle = title + (year ? " (" + year + ")" : "") + (author ? " — " + author : "");
   $("toolbar").hidden = false;
   setStatus(true, "작품을 펼치는 중…");
   goBtn.textContent = "⏹ 중지"; goBtn.classList.add("stop");
@@ -323,6 +325,7 @@ async function analyze(){
     if (idle > IDLE_MS){ timedOut = true; myCtrl.abort(); }
   }, 1000);
   let userMsg = `작가: ${author || "(미상 — 제목으로 판단해 주세요)"}\n소설 제목: ${title}`;
+  if (year) userMsg += `\n저자가 발행한 연도: ${year}`;
   if (extra) userMsg += `\n추가 요청: ${extra}`;
   try{
     const res = await fetch("https://api.deepseek.com/chat/completions", {
@@ -596,7 +599,7 @@ function shuffleExamples(){
     const b = document.createElement("button"); b.className = "chip";
     b.textContent = LABEL[kind][0] + t;
     b.title = `${a} · ${LABEL[kind][1]}`;
-    b.onclick = () => { $("author").value = a; $("title").value = t; };
+    b.onclick = () => { $("author").value = a; $("title").value = t; $("year").value = ""; };
     box.appendChild(b);
   });
   const r = document.createElement("button"); r.className = "chip"; r.textContent = "🔄 다른 추천";
